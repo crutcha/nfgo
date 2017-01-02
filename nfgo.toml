@@ -1,0 +1,11 @@
+[collector]
+server_port = 2055
+forwarding_enabled = true
+forwarding_servers = [
+    "10.132.4.222:2055",
+    "104.236.88.173:2055"
+]
+
+[api]
+
+[billing]
