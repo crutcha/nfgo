@@ -1,6 +1,8 @@
 package collector
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"github.com/spf13/viper"
 	"golang.org/x/net/ipv4"
@@ -19,6 +21,14 @@ import (
 // Listening port. This may or may not cause problems but for now we will use
 // Two seperate connections to accomplish forwarding. We will create a socket
 // with UDPConn but read the payload from the raw socket.
+
+// UDP header format for parsing raw socket packet
+type udpHeader struct {
+	SrcPort  uint16
+	DstPort  uint16
+	Length   uint16
+	Checksum uint16
+}
 
 // This function will forward flow datagram payloads to all configured flow
 // destinations with a manually crafted ipv4 header.
@@ -41,13 +51,29 @@ func forwardFlow(rc *ipv4.RawConn, h *ipv4.Header, p []byte, cm *ipv4.ControlMes
 	}
 }
 
-func Unpack(datagram []byte) {
+func unpackRawPacket(datagram []byte) {
+	var nfheader V5Header
+	var udpheader udpHeader
 
 	// Since binary.Read() method uses io.Reader interface as an
 	// argument, need to create new buffer which implements that
 	// interface.
-	// buf := bytes.NewBuffer(datagram)
+	buf := bytes.NewBuffer(datagram)
+
+	// I THINK I can index this byte slice like datagram[udpheaderlen:] and
+	// Disregard the UDP header but for now let's just unpack it too.
+	if udperr := binary.Read(buf, binary.BigEndian, &udpheader); udperr != nil {
+		fmt.Println(udperr)
+	}
+
 	// Unpack binary data into one of our datagram structs
+	err := binary.Read(buf, binary.BigEndian, &nfheader)
+	if err != nil {
+		fmt.Println("Error unpacking flow header", datagram)
+	}
+
+	// Match version number found in header and call appropriate parsing
+	// Function.
 
 }
 
@@ -58,7 +84,7 @@ func Unpack(datagram []byte) {
 // destinations.
 func Collector() {
 	var conn_port string
-	var forward_servers []string
+	// var forward_servers []string
 
 	// Load up config from viper TOML file. Look for config file in project's
 	// root directory.
@@ -70,7 +96,7 @@ func Collector() {
 		fmt.Println("Configuration file not found.")
 	} else {
 		conn_port = strconv.Itoa(viper.GetInt("collector.server_port"))
-		forward_servers = viper.GetStringSlice("collector.forwarding_servers")
+		// forward_servers = viper.GetStringSlice("collector.forwarding_servers")
 	}
 
 	// Spin up UDP listener on port from config
@@ -94,14 +120,15 @@ func Collector() {
 	buf := make([]byte, 1514)
 
 	for {
-		// Read incoming connection in buffer
-		h, p, cm, _ := rawconn.ReadFrom(buf)
-		fmt.Println(h)
+		// Read incoming connection in buffer.
+		_, p, _, _ := rawconn.ReadFrom(buf)
 
 		// Pass raw socket data along with forwarding servers to forwarding function
-		forwardFlow(rawconn, h, p, cm, forward_servers)
+		// forwardFlow(rawconn, h, p, cm, forward_servers)
 
 		// Here is where some byte decoding needs to happen so we can forward
-		// and also dump to database
+		// And also dump to database. Since we're not using UDPConn and instead using
+		// A raw socket, need to account for 8 byte UDP header.
+		unpackRawPacket(p)
 	}
 }
