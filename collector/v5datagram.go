@@ -1,11 +1,13 @@
 package collector
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 )
 
 // Representation of a v5 NetFlow datagram.
-// Netflow v5 headers are 24 bytes in length.
+// Netflow  headers are 24 bytes in length.
 //
 //    0                   1                   2                   3
 //    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
@@ -38,8 +40,9 @@ import (
 //
 //   Some documentation shows the last 2 bytes as being 'reserved', but
 //   PCAPs of actual v5 exports show this being a sampling interval field.
-
-type V5Header struct {
+//   In this case, we will create a generic Netflow datagram struct that
+//   contains flow records of any type using FlowRecord interface.
+type NetflowHeader struct {
 	Version          uint16
 	Count            uint16
 	SysUpTime        uint32
@@ -49,6 +52,11 @@ type V5Header struct {
 	EngineType       uint8
 	EngineID         uint8
 	SamplingInterval uint16
+}
+
+type FlowPacket struct {
+	NetflowHeader
+	Records []FlowRecord
 }
 
 // Netflow v5 flow records are 48 bytes in length.
@@ -127,12 +135,12 @@ type V5Record struct {
 	Pad2     uint16
 }
 
-// Function to parse version 5 flows. Once the header has been parsed,
-// This function can be passed the remainer of the payload slice along
-// With flow count from the header and returns a slice of records. It is
-// Up to the caller to either inject into database or forward.
-func parseV5Flow(records []byte, count int) []V5Record {
-	var recslice []V5Record
+// Function to parse version 5 flow that satisies FlowPacket interface.
+// Once the header has been parsed, This function can be passed the remainder
+// of the payload slice along With flow count from the header and returns
+// a slice of records. It is Up to the caller to either inject into
+// database or forward.
+func (r V5Record) parseFlowRecord(records []byte, count int) error {
 
 	// Should we verify that the length of the byte slice is legit and
 	// Doesn't contain extra data? We could check for remainer of
@@ -146,5 +154,16 @@ func parseV5Flow(records []byte, count int) []V5Record {
 		fmt.Println("") // Need some thought on DB model before doing this
 	}
 
-	return recslice
+	return nil
+}
+
+// Maybe the answer is to have each struct type implement it's own unpack
+// Method which already has access to it's struct. Then I won't need to worry
+// About trying to reflect the struct value so I can properly unpack it.
+func (r V5Record) unpackFlowRecord(payload *bytes.Buffer, index int) error {
+	_ = binary.Read(payload, binary.BigEndian, &r)
+	fmt.Println(r)
+
+	// just return nil for now
+	return nil
 }

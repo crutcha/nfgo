@@ -30,6 +30,14 @@ type udpHeader struct {
 	Checksum uint16
 }
 
+// Interface for parsing flow records into database entries. This allows us to
+// Implement methods on different flow type structs(netflow/ipfix/sflow)
+// And use a general parse function as opposed to create a parse function for
+// Each type.
+type FlowRecord interface {
+	unpackFlowRecord(*bytes.Buffer, int) error
+}
+
 // This function will forward flow datagram payloads to all configured flow
 // destinations with a manually crafted ipv4 header.
 func forwardFlow(rc *ipv4.RawConn, h *ipv4.Header, p []byte, cm *ipv4.ControlMessage, s []string) {
@@ -52,7 +60,7 @@ func forwardFlow(rc *ipv4.RawConn, h *ipv4.Header, p []byte, cm *ipv4.ControlMes
 }
 
 func unpackRawPacket(datagram []byte) {
-	var nfheader V5Header
+	var nfheader NetflowHeader
 	var udpheader udpHeader
 
 	// Since binary.Read() method uses io.Reader interface as an
@@ -66,14 +74,31 @@ func unpackRawPacket(datagram []byte) {
 		fmt.Println(udperr)
 	}
 
-	// Unpack binary data into one of our datagram structs
-	err := binary.Read(buf, binary.BigEndian, &nfheader)
-	if err != nil {
-		fmt.Println("Error unpacking flow header", datagram)
-	}
+	// Here we'll check to see which socket it was received on.
+	// NetFlow will come in on different ports than SFlow
+	// Match version number found in header, unpack flow records to appropriate
+	// struct type,  and call it's interface parse method. Ideally
+	// We don't care which protocol it is since each header struct will
+	// Contain a version and also satisfy FlowRecord interface.
+	if udpheader.DstPort == 2055 {
+		_ = binary.Read(buf, binary.BigEndian, &nfheader)
+		// nfheader.Records = make([]FlowRecord, 0, nfheader.Count)
 
-	// Match version number found in header and call appropriate parsing
-	// Function.
+		// This if block here checking for version is temporary. If interfaces
+		// Works for this then we don't care about version only that each struct
+		// Implements the interface.
+		fmt.Println(nfheader)
+		if nfheader.Version == 5 {
+			for i, v := range nfheader.Records {
+				v.unpackFlowRecord(buf, i)
+			}
+			// unpackFlowRecords(record, buf, int(nfheader.Count))
+		} else if nfheader.Version == 9 {
+			fmt.Println("Got V9 packet, can't handle that yet.")
+		} else {
+			fmt.Println("Unrecognized datagram received in netflow port.")
+		}
+	}
 
 }
 
@@ -130,5 +155,8 @@ func Collector() {
 		// And also dump to database. Since we're not using UDPConn and instead using
 		// A raw socket, need to account for 8 byte UDP header.
 		unpackRawPacket(p)
+
+		// Dump records to database
+		// unpackFlowRecords(records)
 	}
 }
