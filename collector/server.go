@@ -2,9 +2,12 @@ package collector
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"github.com/spf13/viper"
+	"github.com/tehmaze/netflow"
+	"github.com/tehmaze/netflow/netflow5"
+	"github.com/tehmaze/netflow/netflow9"
+	"github.com/tehmaze/netflow/session"
 	"golang.org/x/net/ipv4"
 	"net"
 	"strconv"
@@ -21,22 +24,6 @@ import (
 // Listening port. This may or may not cause problems but for now we will use
 // Two seperate connections to accomplish forwarding. We will create a socket
 // with UDPConn but read the payload from the raw socket.
-
-// UDP header format for parsing raw socket packet
-type udpHeader struct {
-	SrcPort  uint16
-	DstPort  uint16
-	Length   uint16
-	Checksum uint16
-}
-
-// Interface for parsing flow records into database entries. This allows us to
-// Implement methods on different flow type structs(netflow/ipfix/sflow)
-// And use a general parse function as opposed to create a parse function for
-// Each type.
-type FlowRecord interface {
-	unpackFlowRecord(*bytes.Buffer, int) error
-}
 
 // This function will forward flow datagram payloads to all configured flow
 // destinations with a manually crafted ipv4 header.
@@ -57,49 +44,6 @@ func forwardFlow(rc *ipv4.RawConn, h *ipv4.Header, p []byte, cm *ipv4.ControlMes
 		}
 
 	}
-}
-
-func unpackRawPacket(datagram []byte) {
-	var nfheader NetflowHeader
-	var udpheader udpHeader
-
-	// Since binary.Read() method uses io.Reader interface as an
-	// argument, need to create new buffer which implements that
-	// interface.
-	buf := bytes.NewBuffer(datagram)
-
-	// I THINK I can index this byte slice like datagram[udpheaderlen:] and
-	// Disregard the UDP header but for now let's just unpack it too.
-	if udperr := binary.Read(buf, binary.BigEndian, &udpheader); udperr != nil {
-		fmt.Println(udperr)
-	}
-
-	// Here we'll check to see which socket it was received on.
-	// NetFlow will come in on different ports than SFlow
-	// Match version number found in header, unpack flow records to appropriate
-	// struct type,  and call it's interface parse method. Ideally
-	// We don't care which protocol it is since each header struct will
-	// Contain a version and also satisfy FlowRecord interface.
-	if udpheader.DstPort == 2055 {
-		_ = binary.Read(buf, binary.BigEndian, &nfheader)
-		// nfheader.Records = make([]FlowRecord, 0, nfheader.Count)
-
-		// This if block here checking for version is temporary. If interfaces
-		// Works for this then we don't care about version only that each struct
-		// Implements the interface.
-		fmt.Println(nfheader)
-		if nfheader.Version == 5 {
-			for i, v := range nfheader.Records {
-				v.unpackFlowRecord(buf, i)
-			}
-			// unpackFlowRecords(record, buf, int(nfheader.Count))
-		} else if nfheader.Version == 9 {
-			fmt.Println("Got V9 packet, can't handle that yet.")
-		} else {
-			fmt.Println("Unrecognized datagram received in netflow port.")
-		}
-	}
-
 }
 
 // Collector is the main function of this package. It will spin up a simple
@@ -141,22 +85,42 @@ func Collector() {
 	defer conn.Close()
 	defer rawconn.Close()
 
-	// make byte slice to hold incoming data
-	buf := make([]byte, 1514)
+	// Create decoder map
+	decoders := make(map[string]*netflow.Decoder)
 
 	for {
-		// Read incoming connection in buffer.
-		_, p, _, _ := rawconn.ReadFrom(buf)
+		// make byte slice to hold incoming data
+		buf := make([]byte, 8192)
 
-		// Pass raw socket data along with forwarding servers to forwarding function
-		// forwardFlow(rawconn, h, p, cm, forward_servers)
+		// Read incoming UDP connection in buffer.
+		count, endpoint, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			fmt.Println("Error reading from:", endpoint)
+		}
 
-		// Here is where some byte decoding needs to happen so we can forward
-		// And also dump to database. Since we're not using UDPConn and instead using
-		// A raw socket, need to account for 8 byte UDP header.
-		unpackRawPacket(p)
+		d, found := decoders[endpoint.String()]
+		if !found {
+			s := session.New()
+			d = netflow.NewDecoder(s)
+			decoders[endpoint.String()] = d
+		}
 
-		// Dump records to database
-		// unpackFlowRecords(records)
+		// TODO: When server starts, this buffer read produceds
+		// EOF error for about 30-45 seconds before starting to
+		// work. Needs some debugging.
+		m, err := d.Read(bytes.NewBuffer(buf[:count]))
+		if err != nil {
+			fmt.Println("Decoder error:", err)
+			continue
+		}
+
+		// Only going to support v5/v9 for now.
+		switch p := m.(type) {
+		case *netflow5.Packet:
+			netflow5.Dump(p)
+		case *netflow9.Packet:
+			netflow9.Dump(p)
+		}
+
 	}
 }
